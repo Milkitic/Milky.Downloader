@@ -4,7 +4,8 @@ using System.Text;
 
 namespace DownloaderCore
 {
-    class Downloader
+    public static class DownloaderOption
     {
+        public static string CachePath { get; set; }
     }
 }
