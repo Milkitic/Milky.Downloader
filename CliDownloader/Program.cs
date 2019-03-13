@@ -1,9 +1,9 @@
-﻿using System;
+﻿using DownloaderCore;
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using DownloaderCore;
 
 namespace CliDownloader
 {
@@ -11,7 +11,7 @@ namespace CliDownloader
     {
         static void Main(string[] args)
         {
-            var downloader = new ComponentDownloader("file://C:/Users/ptdev/Desktop/Col.zip", "F:\\");
+            var downloader = new ComponentDownloader("https://github.com/Milkitic/Osu-Player/releases/download/2.0.6994.3181/Osu-Player.zip", "E:\\");
             downloader.RequestCreated += Downloader_RequestCreated;
             downloader.ResponseReceived += Downloader_ResponseReceived;
             downloader.DownloadStarted += Downloader_DownloadStarted;
@@ -39,7 +39,7 @@ namespace CliDownloader
             Console.WriteLine("error occured: \r\n" + ex);
         }
 
-        private static void Downloader_DownloadFinished(float totalTime, float avgSpeed)
+        private static void Downloader_DownloadFinished(float totalTime, float avgSpeed, float maxSpeed)
         {
             Console.WriteLine("download finished, used {0}s amount. average speed: {1}", totalTime, avgSpeed);
         }

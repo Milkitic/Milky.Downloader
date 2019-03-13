@@ -40,7 +40,7 @@ namespace DownloaderCore
         private readonly object _downloadObject = new object();
         private bool _isDownloading;
 
-        private bool _useMemoryCache = false;
+        private bool _useMemoryCache;
 
         private string _tempSavePath;
         private string _recommendName;
@@ -79,97 +79,105 @@ namespace DownloaderCore
                 _isDownloading = true;
             }
 
-            WebRequest request = CreateRequestObject();
-            if (_recommendName == null)
-                _recommendName = request.RequestUri.AbsoluteUri.Split('/').Last();
-            RequestCreated?.Invoke(Url);
-
-            var response = await request.GetResponseAsync();
-            ResponseReceived?.Invoke(Url);
-
-            if (response is null)
+            try
             {
-                RaiseError(new NotImplementedException());
-                return;
-            }
+                WebRequest request = CreateRequestObject();
+                if (_recommendName == null)
+                    _recommendName = request.RequestUri.AbsoluteUri.Split('/').Last();
+                RequestCreated?.Invoke(Url);
 
-            var newName = response.ResponseUri.AbsoluteUri.Split('/').Last();
-            if (newName != _recommendName)
-            {
-                var arg = new NamingConflictEventArgs();
-                NamingConflict?.Invoke(this, arg);
-                if (arg.UseServerName)
+                var response = await request.GetResponseAsync();
+                ResponseReceived?.Invoke(Url);
+
+                if (response is null)
                 {
-                    _recommendName = newName;
+                    RaiseError(new WebException("The server returns an empty response."));
+                    return;
                 }
-            }
 
-            _tempSavePath = RecommendSavePath + ".milkydownload";
-
-            StartSynchronousProgressTask();
-            _downloadTask = Task.Run(() =>
-            {
-                try
+                var newName = response.ResponseUri.AbsoluteUri.Split('/').Last();
+                if (newName != _recommendName)
                 {
-                    var fileSize = response.ContentLength;
-                    DownloadStarted?.Invoke(fileSize);
-
-                    if (!Directory.Exists(SaveDirectory))
-                        Directory.CreateDirectory(SaveDirectory);
-
-                    using (var responseStream = response.GetResponseStream())
+                    var arg = new NamingConflictEventArgs();
+                    NamingConflict?.Invoke(this, arg);
+                    if (arg.UseServerName)
                     {
-                        if (responseStream == null)
-                        {
-                            RaiseError(new NotImplementedException());
-                            return;
-                        }
+                        _recommendName = newName;
+                    }
+                }
 
-                        if (UseMemoryCache)
+                _tempSavePath = RecommendSavePath + ".milkydownload";
+
+                StartSynchronousProgressTask();
+                _downloadTask = Task.Run(() =>
+                {
+                    try
+                    {
+                        var fileSize = response.ContentLength;
+                        DownloadStarted?.Invoke(fileSize);
+
+                        if (!Directory.Exists(SaveDirectory))
+                            Directory.CreateDirectory(SaveDirectory);
+
+                        using (var responseStream = response.GetResponseStream())
                         {
-                            using (var memoryStream = new MemoryStream((int)fileSize))
+                            if (responseStream == null)
                             {
-                                if (!GetData(responseStream, memoryStream, 0))
-                                {
-                                    RaiseUserCancelError();
-                                    return;
-                                }
+                                RaiseError(new NotImplementedException());
+                                return;
+                            }
 
-                                using (var fileStream = GetFileStream(false))
+                            if (UseMemoryCache)
+                            {
+                                using (var memoryStream = new MemoryStream((int)fileSize))
                                 {
-                                    fileStream.Write(memoryStream.GetBuffer(), 0, (int)memoryStream.Length);
+                                    if (!GetData(responseStream, memoryStream, 0))
+                                    {
+                                        RaiseUserCancelError();
+                                        return;
+                                    }
+
+                                    using (var fileStream = GetFileStream(false))
+                                    {
+                                        fileStream.Write(memoryStream.GetBuffer(), 0, (int)memoryStream.Length);
+                                    }
                                 }
                             }
-                        }
-                        else
-                        {
-                            long offset = 0;
-                            var cache = CacheInfo.DownloadingFiles.FirstOrDefault(k => k.FilePath == _tempSavePath);
-                            if (cache != null)
+                            else
                             {
-                                offset = cache.TransferredByte;
-                            }
-                            using (var fileStream = GetFileStream(offset != 0))
-                            {
-                                if (!GetData(responseStream, fileStream, offset))
+                                long offset = 0;
+                                var cache = CacheInfo.DownloadingFiles.FirstOrDefault(k => k.FilePath == _tempSavePath);
+                                if (cache != null)
                                 {
-                                    RaiseUserCancelError();
-                                    return;
+                                    offset = cache.TransferredByte;
+                                }
+                                using (var fileStream = GetFileStream(offset != 0))
+                                {
+                                    if (!GetData(responseStream, fileStream, offset))
+                                    {
+                                        RaiseUserCancelError();
+                                        return;
+                                    }
                                 }
                             }
                         }
                     }
-                }
-                catch (Exception ex)
-                {
-                    RaiseError(ex);
-                    return;
-                }
+                    catch (Exception ex)
+                    {
+                        RaiseError(ex);
+                        return;
+                    }
 
-                _finishedTokenSource?.Cancel();
-            });
+                    _finishedTokenSource?.Cancel();
+                });
 
-            await Task.WhenAll(_downloadTask, _progressTask);
+                await Task.WhenAll(_downloadTask, _progressTask);
+            }
+            catch (Exception ex)
+            {
+                RaiseError(ex);
+            }
+
 
             lock (_downloadObject)
             {
@@ -227,6 +235,7 @@ namespace DownloaderCore
                 var lockObj = new object();
                 long fetchedSize = 0;
                 var lastTime = DateTime.Now;
+                var startTime = DateTime.Now;
                 DataReceived += b =>
                 {
                     lock (lockObj)
@@ -240,8 +249,7 @@ namespace DownloaderCore
 
                 //int count = 0;
                 float avgSec = 5;
-                float avgSpd = 0;
-                float totalSec = 0;
+                float maxSpd = 0;
                 while (!_finishedTokenSource.IsCancellationRequested)
                 {
                     if (_cancelTokenSource.IsCancellationRequested)
@@ -260,40 +268,46 @@ namespace DownloaderCore
                     }
 
                     var speed = total / avgSec;
+                    if (speed > maxSpd) maxSpd = speed;
                     ProgressChanged?.Invoke(fetchedSize, speed);
                     lock (lockObj)
                     {
-                        receivedList.RemoveAll(k => now - k.EndTime > TimeSpan.FromSeconds(avgSec));
+                        receivedList.RemoveAll(k => now - k.EndTime > TimeSpan.FromSeconds(avgSec) && k.StartTime != startTime);
                     }
                 }
 
-                totalSec = (float)(receivedList.Max(k => k.EndTime) - receivedList.Min(k => k.StartTime)).TotalSeconds;
-                avgSpd = fetchedSize / totalSec;
-                int o = 2;
+                float totalSec = (float)(receivedList.Max(k => k.EndTime) - receivedList.Min(k => k.StartTime)).TotalSeconds;
+                float avgSpd = fetchedSize / totalSec;
 
                 var path = RecommendSavePath;
+                int prefix = 2;
                 while (File.Exists(path))
                 {
-                    path = $"{Path.GetFileNameWithoutExtension(SaveDirectory)} ({o}){Path.GetExtension(SaveDirectory)}";
+                    path = string.Format("{0} ({1}){2}",
+                        Path.Combine(Path.GetDirectoryName(RecommendSavePath),
+                            Path.GetFileNameWithoutExtension(RecommendSavePath)),
+                        prefix,
+                        Path.GetExtension(RecommendSavePath));
+                    prefix++;
                 }
                 File.Move(_tempSavePath, path);
-                DownloadFinished?.Invoke(totalSec, avgSpd);
+                DownloadFinished?.Invoke(totalSec, avgSpd, maxSpd);
             });
         }
 
         private WebRequest CreateRequestObject()
         {
             var request = WebRequest.Create(Url);
+            request.Timeout = 30000;
             if (request is HttpWebRequest httpRequest)
             {
-                httpRequest.Timeout = 30000;
                 httpRequest.UserAgent =
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/69.0.3497.100 Safari/537.36";
                 return httpRequest;
             }
+
             if (request is FileWebRequest fileRequest)
             {
-                fileRequest.Timeout = 30000;
                 return fileRequest;
             }
 
